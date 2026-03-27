@@ -1470,6 +1470,22 @@ def getUserJobMetadata(task_id, verbose=False):
     return {"task_id": task_id}
 
 
+@curl_request_decorator(endpoint="job/get_scout_descriptions", method="get", json_out=True)
+def get_scout_descriptions(task_id, verbose=False):
+    """Get scout job descriptions for a task.
+
+    args:
+       task_id: jediTaskID of the task
+       verbose: True to see verbose message
+    returns:
+       status code
+          0: communication succeeded to the panda server
+        255: communication failure
+       a list of scout job description dictionaries, or None if failed
+    """
+    return {"task_id": task_id}
+
+
 # hello
 def hello(verbose=False):
     """Health check with the PanDA server
@@ -1960,5 +1976,21 @@ def get_task_details_json(task_id, verbose=False):
           0: communication succeeded to the panda server
         255: communication failure
        a list of job metadata dictionaries, or error message if failed
+    """
+    return {"task_id": task_id}
+
+
+@curl_request_decorator(endpoint="task/get_parent_detailed_info", method="get", json_out=True)
+def get_parent_detailed_info(task_id, verbose=False):
+    """Get detailed info of the parent task for a given child task.
+
+    args:
+       task_id: jediTaskID of the child task
+       verbose: True to see verbose message
+    returns:
+       status code
+          0: communication succeeded to the panda server
+        255: communication failure
+       a dictionary with parent task details, or None if failed
     """
     return {"task_id": task_id}
