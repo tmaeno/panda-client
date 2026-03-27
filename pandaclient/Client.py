@@ -1470,8 +1470,8 @@ def getUserJobMetadata(task_id, verbose=False):
     return {"task_id": task_id}
 
 
-@curl_request_decorator(endpoint="job/get_scout_descriptions", method="get", json_out=True)
-def get_scout_descriptions(task_id, verbose=False):
+@curl_request_decorator(endpoint="task/get_scout_job_descriptions", method="get", json_out=True)
+def get_scout_job_descriptions(task_id, verbose=False):
     """Get scout job descriptions for a task.
 
     args:
@@ -1484,6 +1484,23 @@ def get_scout_descriptions(task_id, verbose=False):
        a list of scout job description dictionaries, or None if failed
     """
     return {"task_id": task_id}
+
+
+@curl_request_decorator(endpoint="task/get_job_descriptions", method="get", json_out=True)
+def get_job_descriptions(task_id, unsuccessful_only=False, verbose=False):
+    """Get job descriptions for a task.
+
+    args:
+       task_id: jediTaskID of the task
+       unsuccessful_only: True to return only failed, cancelled, or closed jobs
+       verbose: True to see verbose message
+    returns:
+       status code
+          0: communication succeeded to the panda server
+        255: communication failure
+       a list of job description dictionaries, or None if failed
+    """
+    return {"task_id": task_id, "unsuccessful_only": unsuccessful_only}
 
 
 # hello
