@@ -908,7 +908,7 @@ def archiveSourceFiles(workArea, runDir, currentDir, tmpDir, verbose, gluePackag
                 is_included = True
                 break
         if not is_included:
-            tmpLog.warning("%s is specified as extFile but not found in the current dir." % tmp_ext_file)
+            tmpLog.warning("%s is specified as extFile but not found in the current dir" % tmp_ext_file)
     # back to current dir
     os.chdir(currentDir)
     # return
