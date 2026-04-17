@@ -21,7 +21,7 @@ class CustomBuildHook(BuildHookInterface):
         self.params['install_dir'] = os.environ.get('PANDA_INSTALL_TARGET')
         if self.params['install_dir']:
             # non-standard installation path
-            self.params['install_purelib'] = self.params['install_dir']
+            self.params['install_purelib'] = os.path.join(self.params['install_dir'], re.sub(sys.prefix, "", sysconfig.get_path('purelib')))
             self.params['install_scripts'] = os.path.join(self.params['install_dir'], 'bin')
         else:
             self.params['install_dir'] = sys.prefix
