@@ -21,16 +21,21 @@ class CustomBuildHook(BuildHookInterface):
         self.params["install_dir"] = os.environ.get("PANDA_INSTALL_TARGET")
         if self.params["install_dir"]:
             # non-standard installation path
-            self.params["install_purelib"] = os.path.join(self.params["install_dir"], re.sub(sys.prefix, "", sysconfig.get_path("purelib")))
-            self.params["install_scripts"] = os.path.join(self.params["install_dir"], re.sub(sys.prefix, "", sysconfig.get_path("scripts")))
+            self.params["install_purelib"] = os.path.join(
+                self.params["install_dir"], re.sub(sysconfig.get_path("data"), "", sysconfig.get_path("purelib")).lstrip("/")
+            )
+            self.params["install_scripts"] = os.path.join(
+                self.params["install_dir"], re.sub(sysconfig.get_path("data"), "", sysconfig.get_path("scripts")).lstrip("/")
+            )
         else:
-            self.params["install_dir"] = sys.prefix
             try:
                 # python3.2 or higher
+                self.params["install_dir"] = sysconfig.get_path("data")
                 self.params["install_purelib"] = sysconfig.get_path("purelib")
                 self.params["install_scripts"] = sysconfig.get_path("scripts")
             except Exception:
                 # old python
+                self.params["install_dir"] = sys.prefix
                 self.params["install_purelib"] = distutils.sysconfig.get_python_lib()
                 self.params["install_scripts"] = os.path.join(sys.prefix, "bin")
         for k in self.params:
