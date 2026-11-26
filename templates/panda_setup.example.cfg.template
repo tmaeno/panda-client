@@ -18,6 +18,20 @@
 # Authentication mechanism (oidc, x509, or x509_no_grid)
 #PANDA_AUTH = oidc
 
+# Where the token comes from when PANDA_AUTH = oidc (native or oidc-agent).
+# With oidc-agent, the account panda-<PANDA_AUTH_VO> is used. The agent must be running.
+# On a terminal, panda-client creates the account on first use. Without a terminal, as in
+# Jupyter, run the oidc-gen command printed in the error message once on a terminal.
+# If an account with that name already exists for another client, the server rejects the
+# tokens: remove or rename that account.
+#PANDA_TOKEN_SOURCE = oidc-agent
+
+# Token type requested from oidc-agent (id or access, default id). Access tokens need
+# IAM_ACCESS_TOKEN_INCLUDE_AUTHN_INFO=true on the IAM side. oidc-agent asks you to approve
+# each ID token unless the account is loaded with
+#   oidc-add --always-allow-idtoken panda-<PANDA_AUTH_VO>
+#PANDA_OIDC_AGENT_TOKEN_TYPE = id
+
 # Grid proxy file path (required only when PANDA_AUTH = x509_no_grid)
 #X509_USER_PROXY = /Users/hage/x509up_u12345
 

@@ -70,7 +70,15 @@ def _get_ssl_context():
     return context
 
 
-# decode ID token
+# scopes requested for a PanDA token, shared by the device flow here and by token_sources
+def build_scopes(jwt_profile):
+    scopes = "openid profile email offline_access "
+    if jwt_profile == "wlcg":
+        scopes += "wlcg wlcg.groups "
+    return scopes
+
+
+# decode the payload of a JWT (ID or access token) without verifying it
 def decode_id_token(enc):
     enc = enc.split(".")[1]
     enc += "=" * (-len(enc) % 4)
@@ -121,9 +129,7 @@ class OpenIdConnect_Utils:
     def get_device_code(self, device_auth_endpoint, client_id, audience, jwt_profile):
         if self.verbose:
             self.log_stream.debug("getting device code")
-        scopes = "openid profile email offline_access "
-        if jwt_profile == "wlcg":
-            scopes += "wlcg wlcg.groups "
+        scopes = build_scopes(jwt_profile)
         data = {"client_id": client_id, "scope": scopes, "audience": audience}  # iam",
         rdata = urlencode(data).encode()
         if self.verbose:

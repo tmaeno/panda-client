@@ -52,6 +52,8 @@ def setup():
     for i in [
         "PANDA_AUTH",
         "PANDA_AUTH_VO",
+        "PANDA_TOKEN_SOURCE",
+        "PANDA_OIDC_AGENT_TOKEN_TYPE",
         "PANDA_URL_SSL",
         "PANDA_URL",
         "PANDAMON_URL",

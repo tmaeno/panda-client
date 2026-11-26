@@ -16,10 +16,11 @@ _HttpClient (httpx-based) is the shared HTTP layer underneath both paths. It
 supports two auth modes, selected via $PANDA_AUTH:
   - "voms" (default): client cert/key from a grid proxy (see _x509_proxy_path),
     verified against the CA directory from _x509_ca_path.
-  - "oidc": bearer token obtained via openidc_utils' device-authorization flow,
-    or supplied directly through $PANDA_AUTH_ID_TOKEN/$OIDC_AUTH_TOKEN_FILE/
-    $OIDC_AUTH_ID_TOKEN (see get_token_string).
-    A token from the device flow is kept in $PANDA_TOKEN_DIR (default ~/.token/panda).
+  - "oidc": bearer token supplied directly through $PANDA_AUTH_ID_TOKEN/
+    $OIDC_AUTH_TOKEN_FILE/$OIDC_AUTH_ID_TOKEN (see get_token_string), or else
+    obtained from the source selected by $PANDA_TOKEN_SOURCE (see token_sources):
+    openidc_utils' device-authorization flow by default, which keeps the token
+    in $PANDA_TOKEN_DIR (default ~/.token/panda), or oidc-agent.
 
 Server locations come from $PANDA_URL/$PANDA_URL_SSL/$PANDACACHE_URL, falling
 back to the ATLAS production servers at CERN when unset.
@@ -44,7 +45,7 @@ from urllib.parse import urlencode, urlparse
 
 import httpx
 
-from . import MiscUtils, PLogger, openidc_utils
+from . import MiscUtils, PLogger, openidc_utils, token_sources
 from .MiscUtils import commands_get_output
 
 # configuration
@@ -325,6 +326,7 @@ class _HttpClient:
         # auth mode
         self.id_token = None
         self.auth_vo = None
+        self.token_source = None
         if use_oidc():
             self.auth_mode = "oidc"
             if "PANDA_AUTH_VO" in os.environ:
@@ -335,70 +337,86 @@ class _HttpClient:
                 tmp_log = PLogger.getPandaLogger()
                 tmp_log.error("PANDA_AUTH=oidc requires PANDA_AUTH_VO or OIDC_AUTH_VO to be set")
                 sys.exit(EC_Failed)
+            self.token_source = token_sources.get_token_source_name()
+            if self.token_source not in token_sources.TOKEN_SOURCES:
+                tmp_log = PLogger.getPandaLogger()
+                tmp_log.error(f"{token_sources.TOKEN_SOURCE_ENV}={self.token_source} is not one of {', '.join(token_sources.TOKEN_SOURCES)}")
+                sys.exit(EC_Failed)
         else:
             self.auth_mode = "voms"
 
         # verbose
         self.verbose = False
 
-    def get_oidc(self, tmp_log):
-        """Build an OpenIdConnect_Utils helper pointed at this server's auth config for self.auth_vo
-
-        args:
-           tmp_log: logger passed through to OpenIdConnect_Utils
-        returns:
-           an openidc_utils.OpenIdConnect_Utils instance
-        """
+    def get_auth_config_url(self):
+        """Get the URL of this server's auth config for self.auth_vo"""
         parsed_url = urlparse(baseURLSSL)
         if parsed_url.port:
-            auth_url = f"{parsed_url.scheme}://{parsed_url.hostname}:{parsed_url.port}/auth/{self.auth_vo}_auth_config.json"
-        else:
-            auth_url = f"{parsed_url.scheme}://{parsed_url.hostname}/auth/{self.auth_vo}_auth_config.json"
-        oidc = openidc_utils.OpenIdConnect_Utils(auth_url, log_stream=tmp_log, verbose=self.verbose)
-        return oidc
+            return f"{parsed_url.scheme}://{parsed_url.hostname}:{parsed_url.port}/auth/{self.auth_vo}_auth_config.json"
+        return f"{parsed_url.scheme}://{parsed_url.hostname}/auth/{self.auth_vo}_auth_config.json"
 
-    def get_id_token(self, force_new=False):
-        """Populate self.id_token, from a pre-supplied token or by running the device-authorization flow
+    def _fetch_token(self, force_new=False):
+        """Get the bearer token, ID or access, for OIDC auth
+
+        Uses a pre-supplied token if available (see get_token_string), then the token cached in this
+        process, then the source selected by $PANDA_TOKEN_SOURCE.
 
         args:
-           force_new: True to discard any cached token and force a fresh device-authorization flow
+           force_new: True to discard the cached token and have the source get a new one
         returns:
-           True on success; exits the process if the device-authorization flow fails
+           (True, token) or (False, error message)
         """
         tmp_log = PLogger.getPandaLogger()
         token_str = get_token_string(tmp_log, self.verbose)
         if token_str:
-            self.id_token = token_str
-            return True
-        oidc = self.get_oidc(tmp_log)
+            return True, token_str
+        auth_config_url = self.get_auth_config_url()
+        cache_key = (self.token_source, auth_config_url)
         if force_new:
-            oidc.cleanup()
-        s, o = oidc.run_device_authorization_flow()
+            token_sources.clear_cached_token(cache_key)
+        else:
+            token = token_sources.get_cached_token(cache_key)
+            if token:
+                return True, token
+        source = token_sources.get_token_source(self.token_source, self.auth_vo, auth_config_url, tmp_log, self.verbose)
+        s, o = source.get_token(force_new=force_new)
+        if s:
+            token_sources.cache_token(cache_key, o)
+        return s, o
+
+    def get_id_token(self, force_new=False):
+        """Populate self.id_token with the bearer token for OIDC auth, which may be an ID or an access token
+
+        args:
+           force_new: True to discard any cached token and have the token source get a new one
+        returns:
+           True on success; exits the process if no token could be obtained
+        """
+        s, o = self._fetch_token(force_new)
         if not s:
-            tmp_log.error(o)
+            PLogger.getPandaLogger().error(o)
             sys.exit(EC_Failed)
         self.id_token = o
         return True
 
     def get_token_info(self):
-        """Get the decoded claims of the current OIDC ID token
+        """Get the decoded claims of the bearer token for OIDC auth
 
-        Uses a pre-supplied token if available, otherwise runs the device-authorization flow.
+        The claims are normalized by token_sources.normalize_claims, e.g. groups from wlcg.groups.
 
         returns:
-           the decoded token claims dict, or (False, None) if the device-authorization flow fails
+           the decoded token claims dict, or None if no token could be obtained or decoded
         """
         tmp_log = PLogger.getPandaLogger()
-        token_str = get_token_string(tmp_log, self.verbose)
-        if token_str:
-            return openidc_utils.decode_id_token(token_str)
-        oidc = self.get_oidc(tmp_log)
-        s, o = oidc.run_device_authorization_flow()
+        s, o = self._fetch_token()
         if not s:
             tmp_log.error(o)
-            return False, None
-        s, o, token_info = oidc.check_token()
-        return token_info
+            return None
+        try:
+            return token_sources.normalize_claims(openidc_utils.decode_id_token(o))
+        except Exception as e:
+            tmp_log.error(f"failed to decode the token: {e}")
+            return None
 
     def randomize_ip(self, url):
         """Replace url's hostname with a randomly-picked FQDN of one of its resolved IPs
@@ -1566,6 +1584,13 @@ def get_user_name_from_token():
     """
     client = _HttpClient()
     token_info = client.get_token_info()
+    if isinstance(token_info, dict) and "name" not in token_info:
+        # typical of an access token from an IAM that leaves the user's identity out of access tokens
+        PLogger.getPandaLogger().error(
+            "The token has no name claim. For access tokens, IAM needs IAM_ACCESS_TOKEN_INCLUDE_AUTHN_INFO=true "
+            f"and the profile scope; with {token_sources.TOKEN_SOURCE_ENV}=oidc-agent, unset "
+            f"{token_sources.OIDC_AGENT_TOKEN_TYPE_ENV} or set it to id"
+        )
     try:
         name = " ".join([t[:1].upper() + t[1:].lower() for t in str(token_info["name"]).split()])
         groups = token_info.get("groups", None)
