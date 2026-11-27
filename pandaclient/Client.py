@@ -1588,8 +1588,7 @@ def get_user_name_from_token():
         # typical of an access token from an IAM that leaves the user's identity out of access tokens
         PLogger.getPandaLogger().error(
             "The token has no name claim. For access tokens, IAM needs IAM_ACCESS_TOKEN_INCLUDE_AUTHN_INFO=true "
-            f"and the profile scope; with {token_sources.TOKEN_SOURCE_ENV}=oidc-agent, unset "
-            f"{token_sources.OIDC_AGENT_TOKEN_TYPE_ENV} or set it to id"
+            f"and the profile scope"
         )
     try:
         name = " ".join([t[:1].upper() + t[1:].lower() for t in str(token_info["name"]).split()])

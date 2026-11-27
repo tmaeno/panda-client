@@ -229,6 +229,7 @@ class OidcAgentTokenSource(TokenSource):
         args.append(f"--scope={openidc_utils.build_scopes(auth_config.get('jwt_profile')).strip()}")
         if auth_config.get("audience"):
             args.append(f"--aud={auth_config['audience']}")
+        # use a dummy redirect URI for the device flow since oidc-gen requires one even though it won't be used
         args += ["--flow=device", "--confirm-default", "--redirect-uri=http://localhost:8080"]
         return True, args
 
