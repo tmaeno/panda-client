@@ -6,7 +6,8 @@ $PANDA_TOKEN_SOURCE selects where the bearer token sent to the PanDA server come
     with the token kept in $PANDA_TOKEN_DIR
   - "oidc-agent": oidc-token from oidc-agent, using the account panda-<VO>. The account is
     created on first use with PanDA's own client (from the server's auth config), so the
-    server accepts its tokens like those of the native flow.
+    server accepts its tokens like those of the native flow. Without an agent reachable
+    through $OIDC_SOCK, one is taken from oidc-agent-service.
     $PANDA_OIDC_AGENT_TOKEN_TYPE picks "id" (default) or "access" tokens.
 
 Each source returns a token string and does not care whether it is an ID or an access token;
@@ -18,7 +19,9 @@ for a token on every request and some sources run an external command for it.
 """
 
 import os
+import re
 import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -124,7 +127,9 @@ class OidcAgentTokenSource(TokenSource):
     The account is named panda-<VO>, since oidc-token selects the client by account and the
     server only accepts tokens of the client in its auth config. When the account does not
     exist yet, it is created with oidc-gen from the auth config; existing accounts are never
-    changed. The agent itself is not started here.
+    changed. When no agent is reachable through $OIDC_SOCK, oidc-agent-service provides one:
+    it reuses the agent it started before, e.g. for an earlier run, or starts a new one, which
+    keeps running afterwards.
     """
 
     name = "oidc-agent"
@@ -137,6 +142,9 @@ class OidcAgentTokenSource(TokenSource):
         token_type = get_oidc_agent_token_type()
         if token_type not in OIDC_AGENT_TOKEN_TYPES:
             return False, f"{OIDC_AGENT_TOKEN_TYPE_ENV}={token_type} is not one of {', '.join(OIDC_AGENT_TOKEN_TYPES)}"
+        s, o = self._ensure_agent()
+        if not s:
+            return False, o
         # create the account first, so that oidc-token does not complain about it before
         s, o = self._list_accounts()
         if not s:
@@ -158,6 +166,32 @@ class OidcAgentTokenSource(TokenSource):
         if not token:
             return False, f"oidc-token returned no token for {self.account}"
         return True, token
+
+    def _ensure_agent(self):
+        """Make an agent reachable through $OIDC_SOCK, for this process and the tools it runs
+
+        returns:
+           (True, None) or (False, error message)
+        """
+        sock = os.environ.get("OIDC_SOCK")
+        if sock and _can_connect(sock):
+            return True, None
+        # a child cannot set the variable in the user's shell, so the next run asks again and gets the same agent
+        s, o = self._run_command(["oidc-agent-service", "use"])
+        if s:
+            match = re.search(r"OIDC_SOCK=([^;\s]+)", o)
+            if not match:
+                s, o = False, "no OIDC_SOCK in the output of oidc-agent-service use"
+            elif not _can_connect(match.group(1)):
+                s, o = False, f"cannot connect to {match.group(1)}"
+        if not s:
+            return False, (
+                f"oidc-agent is not running and could not be started with oidc-agent-service ({o}). "
+                "Start it with eval $(oidc-agent-service use), e.g. in ~/.bashrc, and retry"
+            )
+        os.environ["OIDC_SOCK"] = match.group(1)
+        self.log_stream.info(f"using oidc-agent at {match.group(1)} (started or reused by oidc-agent-service)")
+        return True, None
 
     def _list_accounts(self):
         """Get the account configurations saved on this host, loaded into the agent or not
@@ -217,15 +251,12 @@ class OidcAgentTokenSource(TokenSource):
         return True, None
 
     def _failure_hint(self, token_type):
-        hints = []
-        if "OIDC_SOCK" not in os.environ:
-            hints.append("oidc-agent may not be running since $OIDC_SOCK is not set; start it with eval $(oidc-agent) or oidc-agent-service.")
         if token_type == "id":
-            hints.append(
+            return (
                 f"ID tokens need your approval unless the account is loaded with oidc-add --always-allow-idtoken {self.account}, "
                 f"or set {OIDC_AGENT_TOKEN_TYPE_ENV}=access to use access tokens."
             )
-        return " ".join(hints)
+        return ""
 
 
 TOKEN_SOURCES = {
@@ -256,6 +287,17 @@ def get_oidc_agent_account(auth_vo):
 def get_oidc_agent_token_type():
     """Get the token type requested from oidc-agent, from $PANDA_OIDC_AGENT_TOKEN_TYPE"""
     return os.environ.get(OIDC_AGENT_TOKEN_TYPE_ENV) or "id"
+
+
+# whether an agent answers on the socket at path; a socket file left by a dead agent does not
+def _can_connect(path):
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(5)
+            sock.connect(path)
+        return True
+    except Exception:
+        return False
 
 
 # whether the user is at a terminal, to answer the prompts of external tools

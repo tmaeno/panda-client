@@ -9,6 +9,7 @@ Run with: python -m unittest pandaclient.tests.test_token_sources
 import base64
 import json
 import os
+import socket
 import subprocess
 import tempfile
 import time
@@ -28,6 +29,8 @@ AUTH_CONFIG = {
     "oidc_config_url": "https://iam.example.org/.well-known/openid-configuration",
 }
 ENDPOINT_CONFIG = {"issuer": "https://iam.example.org/"}
+SERVICE_SOCK = "/tmp/oidc-agent-service-1000/oidc-agent.sock"
+SERVICE_OUTPUT = f"OIDC_SOCK={SERVICE_SOCK}; export OIDC_SOCK;\nOIDCD_PID=123; export OIDCD_PID;\necho Agent pid $OIDCD_PID\n"
 
 
 def make_token(exp_in=3600, **claims):
@@ -54,17 +57,23 @@ def oidc_env(**extra):
 class FakeCommands:
     """Stand-in for subprocess.run, answering each tool from a table and recording the calls"""
 
-    def __init__(self, accounts=("panda-atlas",), token=None, fail=()):
+    def __init__(self, accounts=("panda-atlas",), token=None, fail=(), missing=(), service_output=SERVICE_OUTPUT):
         self.accounts = list(accounts)
         self.token = token or make_token()
         self.fail = fail
+        self.missing = missing
+        self.service_output = service_output
         self.calls = []
 
     def __call__(self, args, **kwargs):
         self.calls.append(list(args))
         tool = args[0]
+        if tool in self.missing:
+            raise FileNotFoundError(tool)
         if tool in self.fail:
             return subprocess.CompletedProcess(args, 1, stdout="")
+        if tool == "oidc-agent-service":
+            return subprocess.CompletedProcess(args, 0, stdout=self.service_output)
         if tool == "oidc-add":
             return subprocess.CompletedProcess(args, 0, stdout="".join(f"{a}\n" for a in self.accounts))
         if tool == "oidc-token":
@@ -76,6 +85,9 @@ class FakeCommands:
 
     def called(self, tool):
         return [c for c in self.calls if c[0] == tool]
+
+    def tools(self):
+        return [c[0] for c in self.calls]
 
 
 class TestBuildScopes(unittest.TestCase):
@@ -143,6 +155,11 @@ class TestOidcAgentTokenSource(unittest.TestCase):
         patcher = mock.patch.object(token_sources.TokenSource, "_get_server_configs", return_value=(True, (dict(AUTH_CONFIG), ENDPOINT_CONFIG)))
         self.server_configs = patcher.start()
         self.addCleanup(patcher.stop)
+        # sockets an agent answers on
+        self.live_sockets = {"/tmp/sock", SERVICE_SOCK}
+        patcher = mock.patch.object(token_sources, "_can_connect", side_effect=lambda path: path in self.live_sockets)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def get_token(self, commands, vo="atlas", interactive=True, **kwargs):
         source = token_sources.OidcAgentTokenSource(vo, "https://x/auth.json", self.log)
@@ -187,12 +204,58 @@ class TestOidcAgentTokenSource(unittest.TestCase):
         self.assertIn("oidc-add not found in PATH", o)
 
     def test_oidc_token_failure_hints(self):
-        del os.environ["OIDC_SOCK"]
         s, o = self.get_token(FakeCommands(fail=("oidc-token",)))
         self.assertFalse(s)
         self.assertIn("exit code 1", o)
-        self.assertIn("$OIDC_SOCK is not set", o)
         self.assertIn("--always-allow-idtoken panda-atlas", o)
+
+    def test_agent_reachable(self):
+        commands = FakeCommands()
+        self.assertTrue(self.get_token(commands)[0])
+        self.assertEqual(commands.called("oidc-agent-service"), [])
+        self.assertEqual(os.environ["OIDC_SOCK"], "/tmp/sock")
+
+    def test_agent_from_service(self):
+        del os.environ["OIDC_SOCK"]
+        commands = FakeCommands()
+        self.assertEqual(self.get_token(commands), (True, commands.token))
+        self.assertEqual(commands.called("oidc-agent-service"), [["oidc-agent-service", "use"]])
+        self.assertEqual(os.environ["OIDC_SOCK"], SERVICE_SOCK)
+        self.assertEqual(commands.tools(), ["oidc-agent-service", "oidc-add", "oidc-token"])
+
+    def test_dead_socket_replaced(self):
+        os.environ["OIDC_SOCK"] = "/tmp/dead"
+        commands = FakeCommands()
+        self.assertTrue(self.get_token(commands)[0])
+        self.assertEqual(os.environ["OIDC_SOCK"], SERVICE_SOCK)
+
+    def test_agent_before_account_creation(self):
+        del os.environ["OIDC_SOCK"]
+        commands = FakeCommands(accounts=[])
+        self.assertTrue(self.get_token(commands)[0])
+        self.assertEqual(commands.tools(), ["oidc-agent-service", "oidc-add", "oidc-gen", "oidc-token"])
+
+    def assert_no_agent(self, commands, reason):
+        del os.environ["OIDC_SOCK"]
+        s, o = self.get_token(commands)
+        self.assertFalse(s)
+        self.assertIn(reason, o)
+        self.assertIn("eval $(oidc-agent-service use)", o)
+        self.assertEqual(commands.tools(), ["oidc-agent-service"])
+        self.assertNotIn("OIDC_SOCK", os.environ)
+
+    def test_service_missing(self):
+        self.assert_no_agent(FakeCommands(missing=("oidc-agent-service",)), "oidc-agent-service not found in PATH")
+
+    def test_service_failure(self):
+        self.assert_no_agent(FakeCommands(fail=("oidc-agent-service",)), "exit code 1")
+
+    def test_service_output_without_sock(self):
+        self.assert_no_agent(FakeCommands(service_output="Agent pid 123\n"), "no OIDC_SOCK")
+
+    def test_service_sock_unreachable(self):
+        self.live_sockets.discard(SERVICE_SOCK)
+        self.assert_no_agent(FakeCommands(), f"cannot connect to {SERVICE_SOCK}")
 
     def test_empty_token(self):
         s, o = self.get_token(FakeCommands(token=" "))
@@ -338,6 +401,29 @@ class TestHttpClientToken(unittest.TestCase):
             self.assertEqual(Client.get_user_name_from_token(), (None, None, None))
         message = logger.return_value.error.call_args[0][0]
         self.assertIn("IAM_ACCESS_TOKEN_INCLUDE_AUTHN_INFO", message)
+
+
+class TestCanConnect(unittest.TestCase):
+    def setUp(self):
+        # short base directory, since socket paths are limited to about 100 characters
+        tmp_dir = tempfile.TemporaryDirectory(dir="/tmp" if os.path.isdir("/tmp") else None)
+        self.addCleanup(tmp_dir.cleanup)
+        self.path = os.path.join(tmp_dir.name, "agent.sock")
+
+    def test_listening(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(self.path)
+            server.listen(1)
+            self.assertTrue(token_sources._can_connect(self.path))
+
+    def test_left_by_dead_agent(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(self.path)
+        self.assertTrue(os.path.exists(self.path))
+        self.assertFalse(token_sources._can_connect(self.path))
+
+    def test_missing(self):
+        self.assertFalse(token_sources._can_connect(self.path))
 
 
 class TestNormalizeClaims(unittest.TestCase):

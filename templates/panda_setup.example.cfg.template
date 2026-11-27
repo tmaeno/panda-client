@@ -19,7 +19,9 @@
 #PANDA_AUTH = oidc
 
 # Where the token comes from when PANDA_AUTH = oidc (native or oidc-agent).
-# With oidc-agent, the account panda-<PANDA_AUTH_VO> is used. The agent must be running.
+# With oidc-agent, the account panda-<PANDA_AUTH_VO> is used. If no agent is reachable through
+# $OIDC_SOCK, panda-client gets one from oidc-agent-service: the agent it started before, or a new
+# one, which keeps running afterwards.
 # On a terminal, panda-client creates the account on first use. Without a terminal, as in
 # Jupyter, run the oidc-gen command printed in the error message once on a terminal.
 # If an account with that name already exists for another client, the server rejects the
