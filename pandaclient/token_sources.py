@@ -224,10 +224,12 @@ class OidcAgentTokenSource(TokenSource):
         ]
         if auth_config.get("client_secret"):
             args.append(f"--client-secret={auth_config['client_secret']}")
+        else:
+            args.append("--pub")
         args.append(f"--scope={openidc_utils.build_scopes(auth_config.get('jwt_profile')).strip()}")
         if auth_config.get("audience"):
             args.append(f"--aud={auth_config['audience']}")
-        args += ["--flow=device", "--confirm-default"]
+        args += ["--flow=device", "--confirm-default", "--redirect-uri=http://localhost"]
         return True, args
 
     def _setup_account(self):
