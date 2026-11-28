@@ -197,8 +197,10 @@ class OpenIdConnect_Utils:
     # refresh token
     def refresh_token(self, token_endpoint, client_id, client_secret, refresh_token_string):
         if self.verbose:
-            self.log_stream.debug("refreshing token")
-        data = {"client_id": client_id, "client_secret": client_secret, "grant_type": "refresh_token", "refresh_token": refresh_token_string}
+            self.log_stream.debug("refreshing token")        
+        data = {"client_id": client_id, "grant_type": "refresh_token", "refresh_token": refresh_token_string}
+        if client_secret:
+            data["client_secret"] = client_secret
         rdata = urlencode(data).encode()
         req = Request(token_endpoint, rdata)
         req.add_header("content-type", "application/x-www-form-urlencoded")
